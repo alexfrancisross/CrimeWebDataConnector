@@ -1,0 +1,215 @@
+<html>
+<!--******************************************************************************************************/
+/** UK Street Crime Web Connector For Tableau															**/
+/** Gets Data From https://data.police.uk/																**/
+/** Author Alex Ross 																					**/
+/** Version 1.0                          																**/
+/*******************************************************************************************************-->
+<meta http-equiv="Cache-Control" content="no-store" />
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+    <!-- Title Core CSS -->
+    <title>UK Street Level Crime Web Data Connector</title>
+
+    <!-- Bootstrap Core CSS -->
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- Custom CSS -->
+    <link href="css/stylish-portfolio.css" rel="stylesheet">
+
+    <!-- Custom Fonts -->
+    <link href="font-awesome/css/font-awesome.min.css" rel="stylesheet" type="text/css">
+    <link href="http://fonts.googleapis.com/css?family=Source+Sans+Pro:300,400,700,300italic,400italic,700italic" rel="stylesheet" type="text/css">
+
+    <!-- Comment the follwing line in and the line after out if you are not connected to the internet -->
+    <link rel="stylesheet" href="//code.jquery.com/ui/1.11.4/themes/smoothness/jquery-ui.css">
+    <script src="//code.jquery.com/jquery-1.10.2.js"></script>
+    <script src="//code.jquery.com/ui/1.11.4/jquery-ui.js"></script>
+    <script src="js/tableauwdc-1.1.0.js" type="text/javascript"></script>
+
+</head>
+
+<body>
+
+<script type="text/javascript">
+(function() {
+
+	//set the number of months back to get data for
+	LIMIT = 60;
+
+	//
+	// Helper functions
+	//
+
+	// Takes an integer and postcode value and constructs a URL for the street level crime API
+	function buildUrl(lastRecordToken, connectiondata) {
+		// set the month to be the current month - the integer passed via lastRecordToken
+		var crimeDate = new Date();
+		crimeDate.setMonth(crimeDate.getMonth() - parseInt(lastRecordToken) - 1 );
+		crimeDate = crimeDate.toJSON().slice(0,7)
+
+		var url = connectiondata + '&date=' + crimeDate;
+		console.log(url);
+		return url;
+	}
+
+	//
+	// Connector definition
+	// 
+
+	var myConnector = tableau.makeConnector();
+
+	myConnector.getColumnHeaders = function() {
+		var fieldNames = ['Category', 'Context', 'Id', 'Latitude', 'Longitude', 'Street id', 'Street Name','Location Subtype', 'Location Type', 'Month', 'Outcome Status', 'Persistent id'];
+		var fieldTypes = ['string', 'string', 'float', 'float', 'float', 'float', 'string' ,'string', 'string',  'date', 'string', 'string'];
+		tableau.headersCallback(fieldNames, fieldTypes); // tell tableau about the fields and their types
+	};
+   
+	myConnector.getTableData = function(lastRecordToken) {
+   
+		var connectiondata = tableau.connectionData;  //get connectionData containing lat long values
+		
+		//if first loop then set lastRecordToken = 0
+		if(!lastRecordToken)
+		{
+			lastRecordToken = 0;
+		}
+		
+		//if we have reach the max no. months then return to Tableau
+		if(parseInt(lastRecordToken) >= LIMIT)
+		{
+			tableau.dataCallback([], '', false);
+			return;
+		}
+	
+	var connectionUrl = buildUrl(lastRecordToken, connectiondata);
+	 	
+	var xhr = $.ajax({
+		url: connectionUrl,
+		dataType: 'json',
+		success: function (data) {
+		//console.log(data);
+
+			if (data) {
+			  var ii;
+			  var toRet = [];
+			  
+			  // mash the data into an array of objects
+			  for (ii = 0; ii < data.length; ++ii) {
+			  // Each entry can be a list of values in the same order as the columns
+				
+			   var outcomeStatusCategory;
+			   if(data[ii].outcome_status){
+					outcomeStatusCategory = data[ii].outcome_status.category
+				}; 
+				 
+				var entry = {'Category': data[ii].category,
+							   'Context' : data[ii].context, 
+							   'Id' : data[ii].id, 
+							   'Latitude' : data[ii].location.latitude,  
+							   'Longitude': data[ii].location.longitude, 
+							   'Street id' : data[ii].location.street.id, 
+							   'Street Name': data[ii].location.street.name, 
+							   'Location Subtype' : data[ii].location_subtype,
+							   'Location Type' : data[ii].location_type,
+							   'Month': new Date(data[ii].month),
+							   'Outcome Status' : outcomeStatusCategory , 
+							   'Persistent id' : data[ii].persistent_id
+							   };
+				  toRet.push(entry);
+			  }
+			  lastRecordToken = parseInt(lastRecordToken) + 1; //increment no of months 
+			   
+			  // Call back to tableau with the table data and the new record number (this is stored as a string)
+			  tableau.dataCallback(toRet, lastRecordToken.toString(), true);
+			} else {
+			  tableau.abortWithError("No results found for postcode: " + postcode);
+			}
+		},
+		error: function (xhr, ajaxOptions, thrownError) {
+		  // add something to the log and return an empty set if there was problem with the connection
+		  tableau.log("connection error: " + xhr.responseText + "\n" + thrownError);
+		  
+		  tableau.log("error connecting to street level crime source with url " + connectionUrl);
+		  lastRecordToken = parseInt(lastRecordToken) + 1; //increment no of months 	   
+		  // Call back to tableau with the table data and the new record number (this is stored as a string)
+		  tableau.dataCallback([], lastRecordToken.toString(), true);
+		}
+	});
+  };
+
+  tableau.registerConnector(myConnector);
+
+  //
+  // Setup connector UI
+  //
+ 
+  $(document).ready(function() {
+   $("#inputForm").submit(function() { // This event fires when a button is clicked
+	  event.preventDefault();
+      var userPostcode = $('input[type=text]').val().trim();
+	  
+	  //convert postcode to lat long using google maps api
+      if (userPostcode) {
+		var googleUrl = 'http://maps.googleapis.com/maps/api/geocode/json?address=' + userPostcode + '&sensor=false'
+		var lat;
+		var lng;
+   
+		var xhr = $.ajax({
+        url: googleUrl,
+        dataType: 'json',
+        success: function (data) {
+			console.log(data);
+            if (data) {
+				lat = data.results[0].geometry.location.lat;
+				lng = data.results[0].geometry.location.lng;
+			}
+   
+			var connectionUrl = 'https://data.police.uk/api/crimes-street/all-crime?lat=' + lat + '&lng=' + lng;
+	
+			tableau.connectionData = connectionUrl; // set the ticker symbol as the connection data so we can get to it when we fetch the data
+			tableau.connectionName = 'Crime Data For: ' + userPostcode; // name the data source. This will be the data source name in Tableau
+			tableau.submit();
+		}
+	 })
+	}
+  });
+ });
+})();
+</script>
+</head>
+<body>
+
+<!-- Header -->
+    <header id="top" class="header">
+        <div class="text-vertical-center">
+            <h1>UK Street Level Crimes</h1>
+			<br>
+			
+<form id="inputForm" action=""> <p class="lead">
+  Enter a UK postcode: <input type="text" name="postcode" value="" style="width: 150px;" />
+  </p>
+  
+   <p class="lead"> <input class="btn btn-dark btn-lg" type="submit" value="Get Crime Data"></p>
+</form>
+ <!-- About -->
+    <section id="about" class="about">
+        <div class="container">
+            <div class="row">
+                <div class="col-lg-12 text-center">
+                    <p class="lead">This Web Data Connector is Powered By <a target="_blank" href="https://data.police.uk/">data.police.uk</a>.</p>
+                </div>
+            </div>
+            <!-- /.row -->
+        </div>
+        <!-- /.container -->
+    </section>
+
+</body>
+</html>
